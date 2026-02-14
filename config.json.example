@@ -1,0 +1,22 @@
+[
+  {
+    "Type": "OneDrive",
+    "TargetUser": "user@contoso.com",
+    "SourcePath": "/",
+    "LocalDownloadPath": "C:\\Backup\\OneDrive-User"
+  },
+  {
+    "Type": "SharePoint",
+    "SiteName": "Marketing",
+    "LibraryName": "Shared Documents",
+    "SourcePath": "/",
+    "LocalDownloadPath": "C:\\Backup\\Marketing"
+  },
+  {
+    "Type": "SharePoint",
+    "SiteUrl": "contoso.sharepoint.com:/sites/SalesTeam",
+    "LibraryName": "Shared Documents",
+    "SourcePath": "/General",
+    "LocalDownloadPath": "C:\\Backup\\SalesTeam-General"
+  }
+]

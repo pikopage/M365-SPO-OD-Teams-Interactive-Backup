@@ -1,0 +1,8 @@
+# Configuration (contains tenant-specific data)
+config.json
+
+# Log files
+script_log_*.txt
+
+# Renamed files manifest (runtime output)
+renamed_files_manifest.csv
