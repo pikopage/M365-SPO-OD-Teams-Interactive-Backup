@@ -210,7 +210,9 @@ try {
 
 try {
     Connect-MgGraph -Scopes "Files.Read.All", "Sites.Read.All", "User.Read" -NoWelcome
+    $ctx = Get-MgContext
     Write-Log "Connected to Microsoft Graph successfully." "INFO" "Green"
+    Write-Log "[AUTH] $($ctx.Account)  |  tenant: $($ctx.TenantId)" "INFO" "Cyan"
 }
 catch {
     Write-Log "Failed to connect to Microsoft Graph. Error: $_" "ERROR" "Red"

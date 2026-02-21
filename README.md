@@ -26,6 +26,29 @@ The script authenticates interactively via `Connect-MgGraph` and requests these 
 
 An Azure AD admin may need to grant consent for these scopes in your tenant.
 
+### How Authentication Works
+
+The script calls `Connect-MgGraph` without a custom `-ClientId`, so it authenticates through Microsoft's own pre-registered **Microsoft Graph PowerShell** app (client ID `14d82eec-...`). No app registration is required in your tenant.
+
+**Login popup behaviour depends on whether the machine is Azure AD joined:**
+
+| Machine type | Auth method | User experience |
+|---|---|---|
+| AAD joined / Hybrid joined (corporate PC) | WAM silent SSO via Windows PRT | No popup — token issued automatically from the Windows login session |
+| Not AAD joined (home PC, test machine) | Interactive browser | Browser popup on first run; token cached for subsequent runs |
+
+WAM (Windows Web Account Manager) is an OS-level broker built into Windows 10/11. On AAD-joined machines it uses the Primary Refresh Token (PRT) maintained by Windows to issue Graph tokens silently — no browser window, no user interaction needed.
+
+To check whether a machine supports silent auth:
+
+```powershell
+dsregcmd /status | Select-String "AzureAdJoined|AzureAdPrt"
+# AzureAdJoined : YES  +  AzureAdPrt : YES  → silent login
+# AzureAdJoined : NO                        → browser popup will appear
+```
+
+If you need to use a **custom App Registration** (for controlled permission scope, Conditional Access, or audit logging under your own app name), pass `-ClientId` and `-TenantId` to `Connect-MgGraph`. An admin must register the app in Entra ID, add the same delegated scopes, and grant admin consent. See `graph-permissions-explained.md` for details.
+
 ### Environment
 
 - PowerShell 5.1 or PowerShell 7+

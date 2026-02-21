@@ -116,6 +116,7 @@ $PwshExe          = if ($PSVersionTable.PSVersion.Major -ge 7) { 'pwsh.exe' } el
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
             <TextBlock x:Name="txtStatus" Grid.Column="0"
@@ -133,6 +134,9 @@ $PwshExe          = if ($PSVersionTable.PSVersion.Major -ge 7) { 'pwsh.exe' } el
             <TextBlock x:Name="txtElapsed" Grid.Column="4"
                        Text="" Foreground="#A0C8FF"
                        Margin="14,0,0,0" VerticalAlignment="Center" FontSize="12"/>
+            <TextBlock x:Name="txtAuthUser" Grid.Column="5"
+                       Text="" Foreground="#80F0D8"
+                       Margin="20,0,0,0" VerticalAlignment="Center" FontSize="12"/>
         </Grid>
     </Grid>
 </Window>
@@ -155,6 +159,7 @@ $txtDownloaded = $Window.FindName('txtDownloaded')
 $txtSkipped    = $Window.FindName('txtSkipped')
 $txtErrors     = $Window.FindName('txtErrors')
 $txtElapsed    = $Window.FindName('txtElapsed')
+$txtAuthUser   = $Window.FindName('txtAuthUser')
 
 # ── Script-scope state ──────────────────────────────────────
 $script:Proc             = $null
@@ -212,6 +217,11 @@ function Update-Stats([string]$Line) {
 
     if ($Line -match 'Starting Task #(\d+)') {
         $txtStatus.Text = "Running Task #$($Matches[1])..."
+    }
+
+    # Parse authenticated user emitted by backup script after Connect-MgGraph
+    if ($Line -match '\[AUTH\] (.+?)\s+\|') {
+        $txtAuthUser.Text = "Signed in: $($Matches[1])"
     }
 }
 
@@ -338,6 +348,29 @@ function Show-ConfigSummary {
     }
 }
 Show-ConfigSummary
+
+# ── Startup: check WAM / AAD join status ────────────────────
+try {
+    $dsreg = (& dsregcmd /status 2>$null) -join "`n"
+    $aadJoined = $dsreg -match 'AzureAdJoined\s*:\s*YES'
+    $hasPrt    = $dsreg -match 'AzureAdPrt\s*:\s*YES'
+
+    if ($aadJoined -and $hasPrt) {
+        $txtStatus.Text   = 'Ready  -  silent login (AAD joined, no popup)'
+        $txtAuthUser.Text = 'WAM: available'
+    }
+    elseif ($aadJoined) {
+        $txtStatus.Text   = 'Ready  -  AAD joined, PRT not yet issued'
+        $txtAuthUser.Text = 'WAM: partial'
+    }
+    else {
+        $txtStatus.Text   = 'Ready  -  login popup will appear on Start'
+        $txtAuthUser.Text = 'WAM: unavailable'
+    }
+}
+catch {
+    $txtStatus.Text = 'Ready'
+}
 
 # ═════════════════════════════════════════════════════════════
 #  Button handlers
