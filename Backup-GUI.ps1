@@ -183,6 +183,7 @@ function Get-LineColor([string]$Line) {
     if ($Line -match 'Skipping:')                              { return '#8C90A4' }
     if ($Line -match 'Task #\d+ Summary')                      { return '#D4B8FF' }
     if ($Line -match 'Starting Task|Backup Summary|All tasks') { return '#A0C8FF' }
+    if ($Line -match 'microsoft\.com/devicelogin|Enter this one-time code|AUTHENTICATION REQUIRED') { return '#FFD700' }
     if ($Line -match 'Connected|Matched|Resolved|Found')       { return '#80F0D8' }
     if ($Line -match '\[GUI\]')                                { return '#FFC8E8' }
     return '#E0E4F0'
@@ -218,6 +219,12 @@ function Update-Stats([string]$Line) {
 
     if ($Line -match 'Starting Task #(\d+)') {
         $txtStatus.Text = "Running Task #$($Matches[1])..."
+    }
+
+    if ($Line -match 'Open a browser and go to:\s+(https://\S+)') {
+        # Auto-open the device login URL in the system default browser (Edge/Chrome/Firefox)
+        try { Start-Process $Matches[1] } catch {}
+        $txtStatus.Text = "Browser opened - enter the code shown above"
     }
 
     # Parse authenticated user emitted by backup script after Connect-MgGraph
@@ -304,6 +311,7 @@ $script:Timer.Add_Tick({
                 $script:Timer.Stop()
 
                 $exitCode = try { $script:Proc.ExitCode } catch { -1 }
+
                 $script:Proc = $null
 
                 if (-not $script:LogFileFound) {
@@ -311,7 +319,7 @@ $script:Timer.Add_Tick({
                     Add-LogLine '[GUI] Ensure Microsoft.Graph modules are installed and config.json is valid.'
                 }
 
-                $resultText = if ($script:AuthFailed)    { 'Authentication failed — check credentials / consent' }
+                $resultText = if ($script:AuthFailed)    { 'Authentication failed - check credentials / consent' }
                               elseif ($script:Errs -gt 0) { 'Completed with errors' }
                               else                         { 'Completed successfully' }
                 $txtStatus.Text = "$resultText  (exit $exitCode)"
@@ -375,7 +383,7 @@ try {
         $txtAuthUser.Text = 'WAM: partial'
     }
     else {
-        $txtStatus.Text   = 'Ready  -  login popup will appear on Start'
+        $txtStatus.Text   = 'Ready  -  device code shown in log on Start (no browser popup)'
         $txtAuthUser.Text = 'WAM: unavailable'
     }
 }
@@ -448,9 +456,9 @@ $btnStart.Add_Click({
 
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName         = $PwshExe
-        $psi.Arguments        = $procArgs
-        $psi.WorkingDirectory = $ScriptDir
+        $psi.FileName               = $PwshExe
+        $psi.Arguments              = $procArgs
+        $psi.WorkingDirectory       = $ScriptDir
         $psi.UseShellExecute  = $false
         $psi.CreateNoWindow   = $true
 

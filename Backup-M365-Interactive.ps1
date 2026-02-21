@@ -52,6 +52,10 @@ $LogFile = Join-Path $PSScriptRoot ("script_log_{0}.txt" -f (Get-Date -Format "y
 $ConfigPath = Join-Path $PSScriptRoot "config.json"
 $ManifestPath = Join-Path $PSScriptRoot "renamed_files_manifest.csv"
 
+# Create the log file immediately — ensures the GUI can always detect it,
+# even if the script crashes before the first Write-Log call.
+Add-Content -Path $LogFile -Value "[$((Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))] [INFO] Script initializing..." -Force -Encoding UTF8
+
 # Initialize Manifest if missing
 if (-not (Test-Path $ManifestPath)) {
     '"Timestamp","OriginalName","NewName","ItemId","DriveId"' | Out-File -FilePath $ManifestPath -Encoding UTF8
@@ -185,9 +189,11 @@ function Invoke-WithRetry {
 }
 
 # --- 3. Load Config & Connect ---
-# Ensure console can display Czech/Unicode characters correctly
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
+# Ensure console can display Czech/Unicode characters correctly.
+# Wrapped in try/catch — [Console]::OutputEncoding throws "Invalid handle"
+# when the process has no real console (e.g. launched with CreateNoWindow=true).
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 Write-Log "========================================" "INFO" "Magenta"
 Write-Log "M365-SPO-OD-Teams Interactive Backup starting" "INFO" "Magenta"
@@ -208,15 +214,150 @@ try {
     return
 }
 
+# Detect WAM availability - AAD/Hybrid joined machines can authenticate silently
+# via the Windows Primary Refresh Token (no browser popup needed).
+# Non-joined machines use the OAuth 2.0 device code flow via direct HTTP calls
+# so the URL and code are written to the log file before blocking on polling.
+# (Connect-MgGraph -UseDeviceAuthentication writes via $Host.UI which is lost
+#  in a windowless child process - direct HTTP avoids that entirely.)
+$dsregOutput = (& dsregcmd /status 2>$null) -join "`n"
+$WamAvailable = $dsregOutput -match 'AzureAdJoined\s*:\s*YES' -and
+                $dsregOutput -match 'AzureAdPrt\s*:\s*YES'
+
 try {
-    Connect-MgGraph -Scopes "Files.Read.All", "Sites.Read.All", "User.Read" -NoWelcome
+    if ($WamAvailable) {
+        Write-Log "AAD joined machine - using silent WAM authentication." "INFO" "Cyan"
+        Connect-MgGraph -Scopes "Files.Read.All", "Sites.Read.All", "User.Read" -NoWelcome
+    }
+    else {
+        Write-Log "Non-AAD machine - device code authentication (no browser popup)." "INFO" "Cyan"
+
+        # Client ID for Microsoft's own "Microsoft Graph PowerShell" app (no registration needed)
+        $dcClientId = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
+        $dcScope    = "https://graph.microsoft.com/Files.Read.All " +
+                      "https://graph.microsoft.com/Sites.Read.All " +
+                      "https://graph.microsoft.com/User.Read offline_access"
+        $dcEndpoint = "https://login.microsoftonline.com/organizations/oauth2/v2.0/devicecode"
+        $tkEndpoint = "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
+
+        # Step 1: request a device code
+        try {
+            $dcResp = Invoke-RestMethod -Uri $dcEndpoint -Method POST -ErrorAction Stop `
+                          -ContentType "application/x-www-form-urlencoded" `
+                          -Body @{ client_id = $dcClientId; scope = $dcScope }
+        }
+        catch {
+            Write-Log "[AUTH-FAILED] Could not request device code: $_" "ERROR" "Red"
+            return
+        }
+
+        # Step 2: show the URL and code in the log (GUI displays these within 500 ms)
+        Write-Log ">>> AUTHENTICATION REQUIRED <<<" "INFO" "Yellow"
+        Write-Log "Open a browser and go to:  $($dcResp.verification_uri)" "INFO" "Yellow"
+        Write-Log "Enter this one-time code:   $($dcResp.user_code)" "INFO" "Yellow"
+        Write-Log "Waiting for sign-in (up to $([int]$dcResp.expires_in) seconds)..." "INFO" "Cyan"
+
+        # Step 3: poll the token endpoint until signed in or expired
+        $pollInterval = [int]$dcResp.interval
+        $expiresIn    = [int]$dcResp.expires_in
+        $deviceCode   = $dcResp.device_code
+        $startPoll    = Get-Date
+        $lastProgress = $startPoll
+        $accessToken  = $null
+
+        while (((Get-Date) - $startPoll).TotalSeconds -lt $expiresIn) {
+            Start-Sleep -Seconds $pollInterval
+
+            if (((Get-Date) - $lastProgress).TotalSeconds -ge 30) {
+                $rem = [int]($expiresIn - ((Get-Date) - $startPoll).TotalSeconds)
+                Write-Log "Still waiting for sign-in... ($rem s remaining)" "INFO" "Cyan"
+                $lastProgress = Get-Date
+            }
+
+            try {
+                $tkResp = Invoke-RestMethod -Uri $tkEndpoint -Method POST -ErrorAction Stop `
+                              -ContentType "application/x-www-form-urlencoded" `
+                              -Body @{ client_id   = $dcClientId
+                                       device_code = $deviceCode
+                                       grant_type  = "urn:ietf:params:oauth:grant-type:device_code" }
+                $accessToken = $tkResp.access_token
+                Write-Log "Device code sign-in completed." "INFO" "Green"
+                break
+            }
+            catch {
+                # Extract the OAuth error code from the response body.
+                # PS5.1 throws System.Net.WebException  -> read the response stream.
+                # PS7   throws HttpResponseException    -> body is already in the message string.
+                $errCode = $null
+                $errStr  = "$_"
+
+                if ($_.Exception -is [System.Net.WebException] -and $_.Exception.Response) {
+                    try {
+                        $errStream = $_.Exception.Response.GetResponseStream()
+                        $errReader = New-Object System.IO.StreamReader($errStream)
+                        $errCode   = ($errReader.ReadToEnd() | ConvertFrom-Json).error
+                        $errReader.Dispose(); $errStream.Dispose()
+                    } catch {}
+                }
+
+                # Fallback: regex on the exception string (PS7 includes the JSON body there)
+                if ([string]::IsNullOrEmpty($errCode) -and $errStr -match '"error"\s*:\s*"([^"]+)"') {
+                    $errCode = $Matches[1]
+                }
+
+                if     ($errCode -eq 'authorization_pending') { <# still waiting - loop #> }
+                elseif ($errCode -eq 'slow_down')             { $pollInterval += 5 }
+                elseif ($errCode -in @('authorization_declined', 'access_denied')) {
+                    Write-Log "[AUTH-FAILED] Authentication declined by user." "ERROR" "Red"; return
+                }
+                elseif ($errCode -in @('expired_token', 'code_expired', 'device_code_expired')) {
+                    Write-Log "[AUTH-FAILED] Device code expired - please restart." "ERROR" "Red"; return
+                }
+                else {
+                    Write-Log "[AUTH-FAILED] Token polling error ($errCode): $errStr" "ERROR" "Red"; return
+                }
+            }
+        }
+
+        if (-not $accessToken) {
+            Write-Log "[AUTH-FAILED] Authentication timed out - code not used within $expiresIn seconds." "ERROR" "Red"
+            return
+        }
+
+        # Step 4: connect the Graph SDK with the acquired token.
+        # Handle SDK v1 (string) vs v2+ (SecureString) for the -AccessToken parameter.
+        $atParam = (Get-Command Connect-MgGraph -ErrorAction SilentlyContinue).Parameters['AccessToken']
+        if ($atParam -and $atParam.ParameterType.FullName -eq 'System.Security.SecureString') {
+            Connect-MgGraph -AccessToken ($accessToken | ConvertTo-SecureString -AsPlainText -Force) -NoWelcome
+        }
+        else {
+            Connect-MgGraph -AccessToken $accessToken -NoWelcome
+        }
+    }
+
+    # Verify the connection is valid
     $ctx = Get-MgContext
-    if (-not $ctx -or [string]::IsNullOrEmpty($ctx.Account)) {
-        Write-Log "[AUTH-FAILED] Connect-MgGraph returned no valid context — token may have been cancelled or consent denied." "ERROR" "Red"
+    if (-not $ctx) {
+        Write-Log "[AUTH-FAILED] Graph context not established." "ERROR" "Red"
         return
     }
-    Write-Log "Connected to Microsoft Graph successfully." "INFO" "Green"
-    Write-Log "[AUTH] $($ctx.Account)  |  tenant: $($ctx.TenantId)" "INFO" "Cyan"
+
+    # With AccessToken-based auth the Account field may be empty - verify via /me
+    if ([string]::IsNullOrEmpty($ctx.Account)) {
+        try {
+            $me = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/me" -ErrorAction Stop
+            Write-Log "Connected to Microsoft Graph successfully." "INFO" "Green"
+            Write-Log "[AUTH] $($me.userPrincipalName)  |  tenant: $($ctx.TenantId)" "INFO" "Cyan"
+        }
+        catch {
+            Write-Log "[AUTH-FAILED] Token validation failed: $_" "ERROR" "Red"
+            return
+        }
+    }
+    else {
+        Write-Log "Connected to Microsoft Graph successfully." "INFO" "Green"
+        Write-Log "[AUTH] $($ctx.Account)  |  tenant: $($ctx.TenantId)" "INFO" "Cyan"
+    }
 }
 catch {
     Write-Log "[AUTH-FAILED] Failed to connect to Microsoft Graph. Error: $_" "ERROR" "Red"

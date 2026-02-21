@@ -30,21 +30,23 @@ An Azure AD admin may need to grant consent for these scopes in your tenant.
 
 The script calls `Connect-MgGraph` without a custom `-ClientId`, so it authenticates through Microsoft's own pre-registered **Microsoft Graph PowerShell** app (client ID `14d82eec-...`). No app registration is required in your tenant.
 
-**Login popup behaviour depends on whether the machine is Azure AD joined:**
+**Authentication method depends on whether the machine is Azure AD joined:**
 
 | Machine type | Auth method | User experience |
 |---|---|---|
-| AAD joined / Hybrid joined (corporate PC) | WAM silent SSO via Windows PRT | No popup — token issued automatically from the Windows login session |
-| Not AAD joined (home PC, test machine) | Interactive browser | Browser popup on first run; token cached for subsequent runs |
+| AAD joined / Hybrid joined (corporate PC) | WAM silent SSO via Windows PRT | No interaction — token issued automatically from the Windows login session |
+| Not AAD joined (home PC, test machine) | OAuth 2.0 device code flow | URL and one-time code appear in the GUI log; the default browser opens automatically |
 
 WAM (Windows Web Account Manager) is an OS-level broker built into Windows 10/11. On AAD-joined machines it uses the Primary Refresh Token (PRT) maintained by Windows to issue Graph tokens silently — no browser window, no user interaction needed.
+
+On non-AAD machines the script calls the OAuth 2.0 device code endpoint directly (bypassing `Connect-MgGraph`'s internal flow, which is not visible in a windowless child process). The URL and code are written to the log file; when run via the GUI the default browser opens automatically.
 
 To check whether a machine supports silent auth:
 
 ```powershell
 dsregcmd /status | Select-String "AzureAdJoined|AzureAdPrt"
 # AzureAdJoined : YES  +  AzureAdPrt : YES  → silent login
-# AzureAdJoined : NO                        → browser popup will appear
+# AzureAdJoined : NO                        → device code flow
 ```
 
 If you need to use a **custom App Registration** (for controlled permission scope, Conditional Access, or audit logging under your own app name), pass `-ClientId` and `-TenantId` to `Connect-MgGraph`. An admin must register the app in Entra ID, add the same delegated scopes, and grant admin consent. See `graph-permissions-explained.md` for details.
@@ -70,7 +72,7 @@ If you need to use a **custom App Registration** (for controlled permission scop
 .\Backup-M365-Interactive.ps1 -UpdateAction Overwrite
 ```
 
-3. A browser window will open for authentication on the first run.
+3. **Authentication:** On AAD-joined machines sign-in happens silently. On non-AAD machines a device code URL and one-time code are printed to the console (or shown in the GUI log); open the URL in any browser and enter the code to complete sign-in.
 
 ### Parameters
 
@@ -209,6 +211,8 @@ This logs what would be downloaded, skipped, or updated without making any chang
 ## GUI
 
 Launch `Backup-GUI.ps1` for a graphical interface. The toolbar includes an **Update Mode** dropdown (`RenameNew` / `Overwrite`) that sets the global `-UpdateAction` parameter for the backup process. The default selection is `RenameNew`.
+
+The GUI detects the machine's AAD join status at startup and shows it in the status bar. On non-AAD machines, when a backup is started the GUI automatically opens the device login URL (`https://microsoft.com/devicelogin`) in the default browser as soon as the code appears in the log viewer — no manual copy-paste required.
 
 ## Throttling and Error Handling
 
