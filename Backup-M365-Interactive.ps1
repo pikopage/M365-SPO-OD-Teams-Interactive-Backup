@@ -211,11 +211,15 @@ try {
 try {
     Connect-MgGraph -Scopes "Files.Read.All", "Sites.Read.All", "User.Read" -NoWelcome
     $ctx = Get-MgContext
+    if (-not $ctx -or [string]::IsNullOrEmpty($ctx.Account)) {
+        Write-Log "[AUTH-FAILED] Connect-MgGraph returned no valid context — token may have been cancelled or consent denied." "ERROR" "Red"
+        return
+    }
     Write-Log "Connected to Microsoft Graph successfully." "INFO" "Green"
     Write-Log "[AUTH] $($ctx.Account)  |  tenant: $($ctx.TenantId)" "INFO" "Cyan"
 }
 catch {
-    Write-Log "Failed to connect to Microsoft Graph. Error: $_" "ERROR" "Red"
+    Write-Log "[AUTH-FAILED] Failed to connect to Microsoft Graph. Error: $_" "ERROR" "Red"
     return
 }
 

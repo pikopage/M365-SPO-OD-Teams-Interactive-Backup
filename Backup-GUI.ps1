@@ -172,6 +172,7 @@ $script:StartTime        = $null
 $script:KnownLogFiles    = @()
 $script:LogFileFound     = $false
 $script:ExitGraceTicks   = 0
+$script:AuthFailed       = $false
 
 # ── Helper: choose colour based on log-line content ─────────
 function Get-LineColor([string]$Line) {
@@ -221,7 +222,16 @@ function Update-Stats([string]$Line) {
 
     # Parse authenticated user emitted by backup script after Connect-MgGraph
     if ($Line -match '\[AUTH\] (.+?)\s+\|') {
+        $txtAuthUser.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#80F0D8')
         $txtAuthUser.Text = "Signed in: $($Matches[1])"
+    }
+
+    # Auth failure — stop counting further errors as backup errors, surface clearly
+    if ($Line -match '\[AUTH-FAILED\]') {
+        $script:AuthFailed = $true
+        $txtAuthUser.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF8CA0')
+        $txtAuthUser.Text = 'Auth failed'
+        $txtStatus.Text   = 'Authentication failed'
     }
 }
 
@@ -301,8 +311,9 @@ $script:Timer.Add_Tick({
                     Add-LogLine '[GUI] Ensure Microsoft.Graph modules are installed and config.json is valid.'
                 }
 
-                $resultText = if ($script:Errs -gt 0) { 'Completed with errors' }
-                              else                     { 'Completed successfully' }
+                $resultText = if ($script:AuthFailed)    { 'Authentication failed — check credentials / consent' }
+                              elseif ($script:Errs -gt 0) { 'Completed with errors' }
+                              else                         { 'Completed successfully' }
                 $txtStatus.Text = "$resultText  (exit $exitCode)"
                 $Window.Title   = 'M365 Interactive Backup'
                 $btnStart.IsEnabled = $true
@@ -408,6 +419,7 @@ $btnStart.Add_Click({
     $script:Downloads      = 0
     $script:Skips          = 0
     $script:Errs           = 0
+    $script:AuthFailed     = $false
     $script:LogFile        = $null
     $script:LogPos         = 0
     $script:LogFileFound   = $false
